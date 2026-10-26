@@ -53,6 +53,15 @@ std::string parentDir(const std::string& p)
 // <component>/Contents/MacOS/MS2000R -> <component>/Contents/Resources/MS2000R_engine
 std::string enginePath() { return parentDir(parentDir(modulePath())) + "/Resources/MS2000R_engine"; }
 
+// EIGHT-1: the bundle's executable name (MS2000R, MS2000R8) in its copies' names. The 4-voice and 8-voice loaders share
+// the folder; with one naming scheme the second would overwrite a copy the first has loaded.
+std::string bundleName()
+{
+    const auto p = modulePath();
+    const auto i = p.find_last_of('/');
+    return i == std::string::npos ? p : p.substr(i + 1);
+}
+
 std::string tempDir()
 {
     const char* t = std::getenv("TMPDIR");
@@ -99,7 +108,7 @@ EngineCopy* newCopy()
 {
     static unsigned counter = 0;
     EngineCopy c;
-    c.path = tempDir() + "/engine_" + std::to_string(getpid()) + "_" + std::to_string(++counter);
+    c.path = tempDir() + "/engine_" + bundleName() + "_" + std::to_string(getpid()) + "_" + std::to_string(++counter);
     std::error_code ec;
     if (!std::filesystem::copy_file(g_copies[0].path, c.path, std::filesystem::copy_options::overwrite_existing, ec)) return nullptr;
     g_copies.push_back(c);

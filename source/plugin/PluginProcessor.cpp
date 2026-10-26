@@ -24,6 +24,9 @@
 #include <filesystem>
 #include "core/rom_paths.h"
 #include <cmath>
+#if MS2K_EIGHT_VOICE
+#include "core/knob_follow.h"   // kEditBufferAddr
+#endif
 
 namespace {
 std::atomic<bool> g_machineTaken{ false };
@@ -89,7 +92,12 @@ Ms2kProcessor::Ms2kProcessor()
         if (d.kind == ms2kparams::kKey) m_keyParam[d.a][d.b] = i;
     }
     syncParams();
-    m_syx.setSend([this](const uint8_t* p, size_t n) { if (m_runner) m_runner->sendMIDIData(p, n); });
+    m_syx.setSend([this](const uint8_t* p, size_t n) {
+        if (m_runner) m_runner->sendMIDIData(p, n);
+#if MS2K_EIGHT_VOICE
+        m_b.midi(p, n);                                  // EIGHT-1: the Library and .syx import reach B too
+#endif
+    });
     m_syx.setClock([this] { return double(m_frames.load(std::memory_order_relaxed)) / (m_hostRate > 0 ? m_hostRate : 48000.0); });   // machine time
     startTimerHz(10);
 }
@@ -109,6 +117,9 @@ void Ms2kProcessor::timerCallback()
 {
     m_syx.poll();
     powerSwitchPoll();
+#if MS2K_EIGHT_VOICE
+    checkInStep();
+#endif
     // HOSTDIAG-1 (R2, default off): MS2K_HOSTDIAG=1 -> once a second to the debugger output (DebugView): is the
     // host still calling processBlock, does the machine advance, and does render() hand out silence. For the
     // VSTHost-only freeze after Demo -> EXIT (2026-10-08): all threads idle-wait in the dump, no spinner.
@@ -178,6 +189,10 @@ extern "C" __attribute__((visibility("default"))) int ms2k_createdProcessors() {
 
 void Ms2kProcessor::stopMachine()
 {
+#if MS2K_EIGHT_VOICE
+    m_b.stop();
+    m_split.reset();
+#endif
     if (m_runner) {
         m_runner->getEmulator().setMidiOutSink(nullptr);
         m_runner->stop();
@@ -190,22 +205,34 @@ void Ms2kProcessor::setKnob(unsigned mux, unsigned x, uint16_t v)
     if (mux >= 4 || x >= 8) return;
     knobs[mux][x] = v;
     if (m_runner) m_runner->getEmulator().setPanelKnob(mux, x, v);
+#if MS2K_EIGHT_VOICE
+    m_b.knob(mux, x, v);
+#endif
 }
 
 void Ms2kProcessor::setSwitch(unsigned col, unsigned row, bool down)
 {
     if (col < 8 && row < 8) m_swHeld[col][row] = down;
     if (m_runner) m_runner->getEmulator().setPanelSwitch(col, row, down);
+#if MS2K_EIGHT_VOICE
+    m_b.key(col, row, down);
+#endif
 }
 
 void Ms2kProcessor::applyInputStage()
 {
     if (auto* d = m_runner ? m_runner->getEmulator().dsp() : nullptr) d->setInputStage(in1, in2, mic2);
+#if MS2K_EIGHT_VOICE
+    m_b.stage(in1, in2, mic2, dac20);
+#endif
 }
 
 void Ms2kProcessor::applyDac()
 {
     if (auto* d = m_runner ? m_runner->getEmulator().dsp() : nullptr) d->setDac20(dac20);
+#if MS2K_EIGHT_VOICE
+    m_b.stage(in1, in2, mic2, dac20);
+#endif
 }
 
 void Ms2kProcessor::applyPanel()
@@ -215,6 +242,11 @@ void Ms2kProcessor::applyPanel()
     applyInputStage(); applyDac(); applyVolume();
     for (unsigned c = 0; c < 8; ++c) for (unsigned r = 0; r < 8; ++r)
         if (m_swHeld[c][r]) m_runner->getEmulator().setPanelSwitch(c, r, true);
+#if MS2K_EIGHT_VOICE
+    for (unsigned m = 0; m < 4; ++m) for (unsigned x = 0; x < 8; ++x) m_b.knob(m, x, knobs[m][x]);
+    for (unsigned c = 0; c < 8; ++c) for (unsigned r = 0; r < 8; ++r)
+        if (m_swHeld[c][r]) m_b.key(c, r, true);
+#endif
 }
 
 void Ms2kProcessor::clearStreams()
@@ -420,10 +452,20 @@ bool Ms2kProcessor::startMachine()
         m_outBytes.push_back({ d ? d->txFrames() : 0, b });   // called on the audio thread, inside render()
         m_syx.feed(b);
     });
+#if MS2K_EIGHT_VOICE
+    // EIGHT-1: machine B powers on with A, from A's flash as A has just loaded it
+    m_split.reset();
+    const bool b = m_b.start(m_runner->getEmulator().getFlashROM(), cfg.dspThread);
+#endif
     applyPanel();
     const uint32_t fm = m_runner->getEmulator().getFlashROM().stateMask();
     setStatus("running - " + m_home.getFullPathName() + (m_haveProjectFlash ? "  (flash from the project" : "  (flash from the folder")
               + (fm ? ", sectors " + juce::String::toHexString(int(fm)).toUpperCase() + ")" : ", factory)"));
+#if MS2K_EIGHT_VOICE
+    m_runStatus = status() + (b ? juce::String("\n8 voices: two machines") : "\n4 voices only - " + m_b.error());
+    m_outOfStep = 0;
+    setStatus(m_runStatus);
+#endif
     return true;
 }
 
@@ -438,6 +480,10 @@ void Ms2kProcessor::prepareToPlay(double sampleRate, int samplesPerBlock)
     m_srcL.clear(); m_srcR.clear();
     for (int ch = 0; ch < 2; ++ch) { m_inInterp[ch].reset(); m_inFifo[ch].clear(); m_inFifo[ch].reserve(size_t(samplesPerBlock) * 2 + 64); }
     m_inTmp.resize(cap);
+#if MS2K_EIGHT_VOICE
+    m_midiInB.reserve(256);
+    m_b.prepare(cap * 2, 1000.0 * double(samplesPerBlock) / m_hostRate);
+#endif
     if (!m_bootTried) bootMachine();
 }
 
@@ -603,6 +649,10 @@ void Ms2kProcessor::processBlock(juce::AudioBuffer<float>& buffer, juce::MidiBuf
         if (std::abs(m_hostRate - 48000.0) < 0.5) {
             dsp->pushAudioIn(0, buffer.getReadPointer(0), uint32_t(N));
             dsp->pushAudioIn(1, buffer.getReadPointer(nIn > 1 ? 1 : 0), uint32_t(N));
+#if MS2K_EIGHT_VOICE
+            m_b.audioIn(0, buffer.getReadPointer(0), uint32_t(N));
+            m_b.audioIn(1, buffer.getReadPointer(nIn > 1 ? 1 : 0), uint32_t(N));
+#endif
         } else {
             const double speed = m_hostRate / 48000.0;   // host samples per 48 kHz frame
             for (int ch = 0; ch < 2; ++ch) {
@@ -616,6 +666,9 @@ void Ms2kProcessor::processBlock(juce::AudioBuffer<float>& buffer, juce::MidiBuf
                 if (used > q.size()) used = q.size();
                 q.erase(q.begin(), q.begin() + ptrdiff_t(used));
                 dsp->pushAudioIn(ch, m_inTmp.data(), uint32_t(nOut));
+#if MS2K_EIGHT_VOICE
+                m_b.audioIn(ch, m_inTmp.data(), uint32_t(nOut));
+#endif
             }
         }
     }
@@ -661,17 +714,35 @@ void Ms2kProcessor::processBlock(juce::AudioBuffer<float>& buffer, juce::MidiBuf
 
     // MIDI IN: a host sample position -> the source frame it falls on in this render.
     m_midiIn.clear();
+#if MS2K_EIGHT_VOICE
+    // EIGHT-1: notes to A or B (m_split), everything else to both
+    m_midiInB.clear();
+    const bool two = m_b.running() && shareNotes();
+    const double t0 = double(m_frames.load(std::memory_order_relaxed)) / m_hostRate;
+#endif
     for (const auto meta : midi) {
         const auto* raw = meta.data; const int len = meta.numBytes;
         if (len <= 0) continue;
-        if (len > 3) { m_runner->sendMIDIData(raw, size_t(len)); continue; }   // SysEx: at the block start
+        if (len > 3) {                                                           // SysEx: at the block start
+            m_runner->sendMIDIData(raw, size_t(len));
+#if MS2K_EIGHT_VOICE
+            m_b.midi(raw, size_t(len));
+#endif
+            continue;
+        }
         const double srcPos = double(meta.samplePosition) * ratio - double(have);
         uint32_t off = srcPos <= 0.0 ? 0u : uint32_t(srcPos);
         if (toRender > 0 && off >= toRender) off = toRender - 1;
         MS2000::Ms2kRunner::MidiEv ev{};
         ev.frame = off; ev.len = uint8_t(len);
         for (int i = 0; i < len; ++i) ev.data[i] = raw[i];
+#if MS2K_EIGHT_VOICE
+        const int to = routeMidi(raw, len, t0 + double(meta.samplePosition) / m_hostRate, two);
+        if (to != 1) m_midiIn.push_back(ev);
+        if (to != 0) m_midiInB.push_back(ev);
+#else
         m_midiIn.push_back(ev);
+#endif
     }
     {   // 2026-10-14 MIDI-COLL instrument (capped): zero [MIDI-PUSH] prints though the SMF put
         // events into processBlock - where do they die? evs=0 here means the buffer was empty on
@@ -691,7 +762,13 @@ void Ms2kProcessor::processBlock(juce::AudioBuffer<float>& buffer, juce::MidiBuf
     if (toRender > 0) {
         static const bool rlog = std::getenv("MS2K_RENDERLOG") != nullptr;   // CPU-PC hunt: render cost per 50 ms
         const double rt0 = rlog ? juce::Time::getMillisecondCounterHiRes() : 0.0;
+#if MS2K_EIGHT_VOICE
+        m_b.beginRender(toRender, m_midiInB.data(), m_midiInB.size());           // B on its worker, alongside A
+#endif
         m_runner->render(m_tmpL.data(), m_tmpR.data(), toRender, m_midiIn.data(), m_midiIn.size(), m_tmpFlags.data());
+#if MS2K_EIGHT_VOICE
+        m_b.endRender(m_tmpL.data(), m_tmpR.data(), toRender);
+#endif
         if (rlog) {
             static double sum = 0.0, mx = 0.0, w0 = -1.0;
             const double ms = juce::Time::getMillisecondCounterHiRes() - rt0, t = double(m_frames.load()) / m_hostRate;
@@ -707,6 +784,9 @@ void Ms2kProcessor::processBlock(juce::AudioBuffer<float>& buffer, juce::MidiBuf
         m_srcR.insert(m_srcR.end(), m_tmpR.begin(), m_tmpR.begin() + toRender);
     } else {
         for (auto& e : m_midiIn) m_runner->sendMIDIData(e.data, e.len);
+#if MS2K_EIGHT_VOICE
+        for (auto& e : m_midiInB) m_b.midi(e.data, e.len);
+#endif
     }
 
     float* outL = buffer.getWritePointer(0);
@@ -784,6 +864,58 @@ void Ms2kProcessor::processBlock(juce::AudioBuffer<float>& buffer, juce::MidiBuf
         }
     }
 }
+
+#if MS2K_EIGHT_VOICE
+// ---- EIGHT-1: the second machine (docs/eight_voice.md) ----
+// Notes go to both machines unless the program needs one: the arpeggiator on (TABLE 1 byte 32 bit 7), or a timbre in
+// use that is not Poly (TABLE 2 +1 bits 6-7: 0 Mono, 1 Poly, 2 Unison; Single and Vocoder play timbre 1, Split and
+// Layer both). The bits as the factory bank has them: Krazy Arpy / Cutting Arpg arp on, the basses Mono, Uni Synth Unison.
+bool Ms2kProcessor::shareNotes() const
+{
+    if (!m_runner) return false;
+    const auto& cpu = m_runner->getEmulator();
+    auto at = [&](uint32_t off) { return cpu.peekExternal(MS2000::kEditBufferAddr + off); };
+    if (at(32) & 0x80) return false;
+    const int mode = (at(16) >> 4) & 3;                                     // Single, Split, Layer, Vocoder
+    const bool poly1 = ((at(38 + 1) >> 6) & 3) == 1, poly2 = ((at(146 + 1) >> 6) & 3) == 1;
+    return (mode == 1 || mode == 2) ? poly1 && poly2 : poly1;
+}
+
+int Ms2kProcessor::routeMidi(const uint8_t* raw, int len, double t, bool two)
+{
+    if (len < 3) return -1;
+    const int st = raw[0] & 0xF0, ch = raw[0] & 0x0F;
+    if (st == 0x90 && raw[2] > 0) return m_split.noteOn(ch, raw[1], t, two);
+    if (st == 0x80 || st == 0x90) return m_split.noteOff(ch, raw[1], t);
+    if (st == 0xB0) {
+        if (raw[1] == 64) m_split.sustain(ch, raw[2] >= 64, t);
+        else if (raw[1] == 120 || raw[1] == 123) m_split.allOff(ch, t);
+        else if (raw[1] == 121) m_split.sustain(ch, false, t);              // reset all controllers lifts the pedal
+    }
+    return -1;
+}
+
+// Once a second: the two edit buffers should be equal (same firmware, flash and inputs). Apart for 3 s, the status says
+// so; selecting the program again (a pad reaches both machines) puts them right.
+void Ms2kProcessor::checkInStep()
+{
+    if (++m_syncTick < 10) return;
+    m_syncTick = 0;
+    if (!m_runner || !m_b.running()) return;
+    uint8_t a[254], b[254];
+    for (uint32_t i = 0; i < 254; ++i) a[i] = m_runner->getEmulator().peekExternal(MS2000::kEditBufferAddr + i);
+    if (!m_b.peek(MS2000::kEditBufferAddr, b, sizeof b)) return;
+    if (std::equal(a, a + 254, b)) {
+        if (m_outOfStep >= 3) { setStatus(m_runStatus); std::fprintf(stderr, "[EIGHT] machines in step again\n"); }
+        m_outOfStep = 0;
+        return;
+    }
+    if (++m_outOfStep == 3) {
+        setStatus(m_runStatus + " - the second machine is out of step: select the program again");
+        std::fprintf(stderr, "[EIGHT] machines out of step (edit buffers differ for 3 s)\n");
+    }
+}
+#endif
 
 // ---- SETTINGS-1: user defaults ----
 // Until now the Settings switches lived only in the project chunk, so a new instance (and the restart that

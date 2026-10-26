@@ -109,4 +109,51 @@ elseif(APPLE)
         COMMAND xattr -cr ${MS2K_AU_MULTI}
         COMMAND codesign --force --sign - ${MS2K_AU_MULTI}/Contents/Resources/MS2000R_engine
         COMMAND codesign --force --sign - ${MS2K_AU_MULTI})
+
+    # EIGHT-1 (2026-10-26): MS2000R 8-voice - the same plugin with a second machine behind the panel (companion*.cpp,
+    # docs/eight_voice.md). Audio Unit only, in its own bundle with the same loader module:
+    # build_vst/AU_multi/MS2000R8.component. AU_EXPORT_PREFIX keeps the factory name the loader looks for.
+    juce_add_plugin(MS2000R8_VST
+        COMPANY_NAME "MS2000 emulation project"
+        PRODUCT_NAME "MS2000R8"
+        PLUGIN_NAME "MS2000R 8-voice"
+        PLUGIN_MANUFACTURER_CODE Msem
+        PLUGIN_CODE Ms28
+        AU_EXPORT_PREFIX MS2000RAU
+        FORMATS AU
+        BUNDLE_ID io.github.ms2000r-emu.plugin8
+        IS_SYNTH TRUE
+        NEEDS_MIDI_INPUT TRUE
+        NEEDS_MIDI_OUTPUT TRUE
+        IS_MIDI_EFFECT FALSE
+        EDITOR_WANTS_KEYBOARD_FOCUS FALSE
+        COPY_PLUGIN_AFTER_BUILD FALSE)
+    juce_generate_juce_header(MS2000R8_VST)
+    target_sources(MS2000R8_VST PRIVATE PluginProcessor.cpp PluginEditor.cpp companion.cpp)
+    # machine B's exports: nothing in the plugin calls them, so not in the shared-code archive (the linker would drop them)
+    target_sources(MS2000R8_VST_AU PRIVATE companion_engine.cpp)
+    target_include_directories(MS2000R8_VST PRIVATE ${CMAKE_CURRENT_SOURCE_DIR} ${CMAKE_SOURCE_DIR}/source)
+    target_compile_definitions(MS2000R8_VST PUBLIC
+        JUCE_WEB_BROWSER=0 JUCE_USE_CURL=0 JUCE_VST3_CAN_REPLACE_VST2=0 JUCE_DISPLAY_SPLASH_SCREEN=0 MS2K_EIGHT_VOICE=1)
+    target_link_libraries(MS2000R8_VST PRIVATE ms2000
+        juce::juce_audio_utils juce::juce_audio_processors
+        PUBLIC juce::juce_recommended_config_flags juce::juce_recommended_warning_flags)
+
+    add_library(MS2000R8_AUShim MODULE shim/ms2k_au_shim.cpp)
+    target_compile_features(MS2000R8_AUShim PRIVATE cxx_std_17)
+    set_target_properties(MS2000R8_AUShim PROPERTIES CXX_VISIBILITY_PRESET hidden PREFIX "" SUFFIX "" OUTPUT_NAME MS2000R8_au_shim)
+    target_link_libraries(MS2000R8_AUShim PRIVATE "-framework AudioToolbox" "-framework CoreFoundation")
+    # assembled on every build (not as the shim's POST_BUILD), so a rebuilt engine always reaches the bundle
+    set(MS2K_AU8_MULTI ${CMAKE_BINARY_DIR}/AU_multi/MS2000R8.component)
+    add_custom_target(MS2000R8_AU
+        COMMAND ${CMAKE_COMMAND} -E rm -rf ${MS2K_AU8_MULTI}
+        COMMAND ${CMAKE_COMMAND} -E copy_directory $<TARGET_BUNDLE_DIR:MS2000R8_VST_AU> ${MS2K_AU8_MULTI}
+        COMMAND ${CMAKE_COMMAND} -E make_directory ${MS2K_AU8_MULTI}/Contents/Resources
+        COMMAND ${CMAKE_COMMAND} -E rename ${MS2K_AU8_MULTI}/Contents/MacOS/MS2000R8 ${MS2K_AU8_MULTI}/Contents/Resources/MS2000R_engine
+        COMMAND ${CMAKE_COMMAND} -E copy $<TARGET_FILE:MS2000R8_AUShim> ${MS2K_AU8_MULTI}/Contents/MacOS/MS2000R8
+        COMMAND xattr -cr ${MS2K_AU8_MULTI}
+        COMMAND codesign --force --sign - ${MS2K_AU8_MULTI}/Contents/Resources/MS2000R_engine
+        COMMAND codesign --force --sign - ${MS2K_AU8_MULTI}
+        COMMENT "Assembling AU_multi/MS2000R8.component")
+    add_dependencies(MS2000R8_AU MS2000R8_AUShim MS2000R8_VST_AU)
 endif()

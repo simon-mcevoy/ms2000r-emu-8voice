@@ -12,6 +12,10 @@
 #include "panel_params.h"
 #include "core/master_vr.h"
 #include <array>
+#if MS2K_EIGHT_VOICE
+#include "companion.h"
+#include "core/voice_split.h"
+#endif
 
 class Ms2kProcessor : public juce::AudioProcessor, private juce::Timer
 {
@@ -27,7 +31,7 @@ public:
     juce::AudioProcessorEditor* createEditor() override;
     bool hasEditor() const override { return true; }
 
-    const juce::String getName() const override { return "MS2000R"; }
+    const juce::String getName() const override { return JucePlugin_Name; }   // "MS2000R", "MS2000R 8-voice"
     bool acceptsMidi() const override { return true; }
     bool producesMidi() const override { return true; }
     bool isMidiEffect() const override { return false; }
@@ -160,6 +164,19 @@ private:
 
     mutable std::mutex m_statusMx;
     juce::String m_status = "starting";
+
+#if MS2K_EIGHT_VOICE
+    // EIGHT-1 (docs/eight_voice.md): machine B, in a private copy of this binary; m_split gives each note to A or B
+    Ms2kCompanion m_b;
+    MS2000::VoiceSplit m_split;
+    std::vector<MS2000::Ms2kRunner::MidiEv> m_midiInB;
+    juce::String m_runStatus;                // the status startMachine set, before the out-of-step note
+    int m_syncTick = 0, m_outOfStep = 0;
+    bool shareNotes() const;                 // the program in A's edit buffer can use both machines
+    int routeMidi(const uint8_t* raw, int len, double t, bool two);   // 0 = A, 1 = B, -1 = both
+    void checkInStep();                      // timer: are the two edit buffers equal
+    void audioWorkgroupContextChanged(const juce::AudioWorkgroup& wg) override { m_b.setWorkgroup(wg); }
+#endif
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR(Ms2kProcessor)
 };
