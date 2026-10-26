@@ -2,7 +2,11 @@
 
 #include <atomic>
 #include <cstdio>
+#ifdef _MSC_VER
 #include <intrin.h>
+#elif !defined(_ReturnAddress)
+#define _ReturnAddress() __builtin_return_address(0)	// macOS build: the diagnostics only need the caller address
+#endif
 
 #include "disasm.h"
 #include "dspconfig.h"
