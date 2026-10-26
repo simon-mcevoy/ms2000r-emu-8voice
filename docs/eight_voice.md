@@ -32,7 +32,7 @@ Nothing in the firmware or the DSP code changes; the 4-voice plugin is built and
 `tools/install_mac.sh [ROM folder]` builds and installs both Audio Units (4-voice and 8-voice), copies the ROM folder to
 `~/Documents/MS2000R` when one is given, and checks both with auval. On a fresh Mac:
 
-    gh repo clone simon-mcevoy/ms2000r-emu ~/Code/ms2000r-emu -- -b macos-8-voice && ~/Code/ms2000r-emu/tools/install_mac.sh <ROM folder>
+    gh repo clone Tuth/ms2000r-emu ~/Code/ms2000r-emu -- -b macos-8-voice && ~/Code/ms2000r-emu/tools/install_mac.sh <ROM folder>
 
 By hand:
 

@@ -2,7 +2,7 @@
 # tools/install_mac.sh - EIGHT-1 (2026-10-26): build the MS2000R and MS2000R 8-voice Audio Units from this checkout and
 # install them for the current user (docs/eight_voice.md). On a fresh Mac, one command:
 #
-#   gh repo clone simon-mcevoy/ms2000r-emu ~/Code/ms2000r-emu -- -b macos-8-voice && ~/Code/ms2000r-emu/tools/install_mac.sh [ROM folder]
+#   gh repo clone Tuth/ms2000r-emu ~/Code/ms2000r-emu -- -b macos-8-voice && ~/Code/ms2000r-emu/tools/install_mac.sh [ROM folder]
 #
 # The ROM folder (flash.bin, and boot-362.bin or boot-362.ms2000.bin beside it or in its "full FW" subfolder;
 # hd44780_a00.bin optional) is copied to ~/Documents/MS2000R and the plugins are pointed at it. Without it the plugins
