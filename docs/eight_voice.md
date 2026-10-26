@@ -29,6 +29,13 @@ Nothing in the firmware or the DSP code changes; the 4-voice plugin is built and
 
 ## Building
 
+`tools/install_mac.sh [ROM folder]` builds and installs both Audio Units (4-voice and 8-voice), copies the ROM folder to
+`~/Documents/MS2000R` when one is given, and checks both with auval. On a fresh Mac:
+
+    gh repo clone simon-mcevoy/ms2000r-emu ~/Code/ms2000r-emu -- -b macos-8-voice && ~/Code/ms2000r-emu/tools/install_mac.sh <ROM folder>
+
+By hand:
+
     cmake --build build_vst.nosync --target MS2000R8_AU
     cp -R build_vst.nosync/AU_multi/MS2000R8.component ~/Library/Audio/Plug-Ins/Components/
 
